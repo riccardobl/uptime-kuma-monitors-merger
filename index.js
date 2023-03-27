@@ -47,10 +47,38 @@ async function getMetric(name){
     }
 }
 
-async function getMergeMetrics(names){
+
+async function getMetricResponseTime(name){
+    try{
+        if(!name.match(/^[a-zA-Z0-9\-\_\.\s]+$/)){
+            throw new Error('Invalid monitor name');
+        }
+        const metricsData=await getMetrics();
+        const jsonPath=`$[?(@.name == 'monitor_response_time')].metrics[?(@.labels.monitor_name == '${name}')].value`;
+        const metric=jp.query(metricsData, jsonPath);
+        const v=parseInt(metric[0]);
+        return v;
+    }catch(e){
+        console.log(e);
+        return -1;
+    }
+}
+
+async function getMergeMetrics(names,timeout=0){
     let v=1;
     for(const name of names){
-        const metric=await getMetric(name);
+        let metric=await getMetric(name,timeout);
+        if(!metric){
+            v=0;
+            break;
+        }
+        if(metric==1&&timeout>0){
+            const responseTime=await getMetricResponseTime(name);
+            if(responseTime==-1||responseTime>timeout){
+                v=0;
+                break;
+            }
+        }
         if(metric===0){
             v=0;
             break;
@@ -74,11 +102,12 @@ app.post('/', async (req, res)=>{
     }
     const plainOutput=req.body.plainOutput;
     const apiKey=req.body.apiKey;
+    const timeout=parseInt(req.body.timeout||0);
     if(apiKey!==KUMA_KEY){
         res.status(401).json({error: 'Invalid API key'});
         return;
     }
-    const v=await getMergeMetrics(monitors);
+    const v=await getMergeMetrics(monitors,timeout);
     if(plainOutput){
         res.send(v==1?"OK":"DOWN");
     }else{
