@@ -6,7 +6,7 @@ const KUMA_KEY=process.env.KUMA_KEY;
 if(!KUMA_KEY){
     throw new Error('KUMA_KEY must be configured');
 }
-const KUMA_METRICS=process.env.KUMA_METRICS||'http://kuma.docker:3001/metrics';
+const KUMA_METRICS=process.env.KUMA_METRICS||'http://uptime:3001/metrics';
 const KUMA_METRICS_UPDATE_FREQUENCY=parseInt(process.env.KUMA_METRICS_UPDATE_FREQUENCY||1000*60,10);
 const KUMA_METRICS_MERGER_PORT=parseInt(process.env.KUMA_METRICS_MERGER_PORT||3002);
 
