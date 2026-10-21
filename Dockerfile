@@ -1,13 +1,14 @@
-FROM node:16
+FROM node:22.23.4-bookworm-slim
 
 RUN mkdir -p /app
 WORKDIR /app
-ADD . /app
+COPY package.json package-lock.json ./
 
-RUN npm i --production
+RUN npm ci --omit=dev --ignore-scripts
+
+COPY index.js ./
 
 RUN groupadd -r app && useradd -r -g app app
-RUN chown -R app:app /app
 USER app
 
 ENTRYPOINT ["node", "index.js"]

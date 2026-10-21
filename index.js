@@ -1,16 +1,19 @@
 import parsePrometheusTextFormat from 'parse-prometheus-text-format';
 import fetch from 'node-fetch';
-import jp from "jsonpath";
 import Express from 'express';
 
 const KUMA_KEY=process.env.KUMA_KEY;
+if(!KUMA_KEY){
+    throw new Error('KUMA_KEY must be configured');
+}
 const KUMA_METRICS=process.env.KUMA_METRICS||'http://kuma.docker:3001/metrics';
-const KUMA_METRICS_UPDATE_FREQUENCY=parseInt(process.env.KUMA_METRICS_UPDATE_FREQUENCY||1000*60);
+const KUMA_METRICS_UPDATE_FREQUENCY=parseInt(process.env.KUMA_METRICS_UPDATE_FREQUENCY||1000*60,10);
 const KUMA_METRICS_MERGER_PORT=parseInt(process.env.KUMA_METRICS_MERGER_PORT||3002);
 
 const metricsDataCache={
     cache: null,
     lastUpdate: 0,
+    pending: null,
 };
 
 async function getMetrics(){
@@ -18,50 +21,44 @@ async function getMetrics(){
         return metricsDataCache.cache;
     }
 
-    const metrics=await fetch(KUMA_METRICS, {
+    if(metricsDataCache.pending)return metricsDataCache.pending;
+    metricsDataCache.pending=fetch(KUMA_METRICS, {
         headers: {
             Authorization: `Basic `+Buffer.from(`:${KUMA_KEY}`).toString('base64')
-        }
-    });
+        },
+        signal: AbortSignal.timeout(10_000),
+        size: 5*1024*1024
+    }).then(async metrics=>{
+        if(!metrics.ok)throw new Error(`Metrics endpoint returned ${metrics.status}`);
+        const metricsData=parsePrometheusTextFormat(await metrics.text());
+        metricsDataCache.cache=metricsData;
+        metricsDataCache.lastUpdate=Date.now();
+        return metricsData;
+    }).finally(()=>{metricsDataCache.pending=null;});
+    return metricsDataCache.pending;
+}
 
-    const metricsText=await metrics.text();
-    const metricsData = parsePrometheusTextFormat( metricsText);
-    metricsDataCache.cache=metricsData;
-    metricsDataCache.lastUpdate=Date.now();
-    return metricsData;
+async function getMetricValue(name,metricName,fallback){
+    try{
+        if(typeof name!=='string'||name.length>256||!name.match(/^[a-zA-Z0-9\-\_\.\s]+$/)){
+            throw new Error('Invalid monitor name');
+        }
+        const metricsData=await getMetrics();
+        const metric=metricsData.find(entry=>entry.name===metricName)?.metrics?.find(entry=>entry.labels?.monitor_name===name);
+        const value=Number.parseInt(metric?.value,10);
+        return Number.isFinite(value)?value:fallback;
+    }catch(e){
+        console.log(e);
+        return fallback;
+    }
 }
 
 async function getMetric(name){
-    try{
-        if(!name.match(/^[a-zA-Z0-9\-\_\.\s]+$/)){
-            throw new Error('Invalid monitor name');
-        }
-        const metricsData=await getMetrics();
-        const jsonPath=`$[?(@.name == 'monitor_status')].metrics[?(@.labels.monitor_name == '${name}')].value`;
-        const metric=jp.query(metricsData, jsonPath);
-        const v=parseInt(metric[0]);
-        return v;
-    }catch(e){
-        console.log(e);
-        return 0;
-    }
+    return getMetricValue(name,'monitor_status',0);
 }
 
-
 async function getMetricResponseTime(name){
-    try{
-        if(!name.match(/^[a-zA-Z0-9\-\_\.\s]+$/)){
-            throw new Error('Invalid monitor name');
-        }
-        const metricsData=await getMetrics();
-        const jsonPath=`$[?(@.name == 'monitor_response_time')].metrics[?(@.labels.monitor_name == '${name}')].value`;
-        const metric=jp.query(metricsData, jsonPath);
-        const v=parseInt(metric[0]);
-        return v;
-    }catch(e){
-        console.log(e);
-        return -1;
-    }
+    return getMetricValue(name,'monitor_response_time',-1);
 }
 
 async function getMergeMetrics(names,timeout=0){
@@ -97,14 +94,19 @@ app.post('/', async (req, res)=>{
         return;
     }
     const monitors=req.body.monitors;
-    if(!monitors || !Array.isArray(monitors)||monitors.length===0){
+    if(!Array.isArray(monitors)||monitors.length===0||monitors.length>64||monitors.some(name=>typeof name!=='string'||name.length>256)){
         res.status(400).json({error: 'Invalid monitors'});
+        return;
     }
     const plainOutput=req.body.plainOutput;
     const apiKey=req.body.apiKey;
-    const timeout=parseInt(req.body.timeout||0);
+    const timeout=Number(req.body.timeout||0);
     if(apiKey!==KUMA_KEY){
         res.status(401).json({error: 'Invalid API key'});
+        return;
+    }
+    if(!Number.isSafeInteger(timeout)||timeout<0||timeout>3_600_000){
+        res.status(400).json({error: 'Invalid timeout'});
         return;
     }
     const v=await getMergeMetrics(monitors,timeout);
